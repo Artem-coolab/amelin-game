@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Побег Амелина!</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #222;
+            overflow: hidden; /* Чтобы не было полос прокрутки */
+            position: relative; /* Для позиционирования оверлеев */
+        }
+        canvas {
+            background-color: #000;
+            border: 2px solid #555;
+            display: block; /* Убираем лишние отступы */
+        }
+        #scoreDisplay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 24px;
+            z-index: 10; /* Поверх канваса */
+        }
+        #timerDisplay { /* Новый элемент для отображения времени */
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 24px;
+            z-index: 10;
+        }
+
+        /* Общие стили для оверлеев (стартовый экран, экран конца игры, экран прохождения уровня) */
+        .overlay-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-family: Arial, sans-serif;
+            text-align: center;
+            z-index: 20; /* Поверх всего */
+        }
+        .overlay-screen h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+        .overlay-screen p {
+            font-size: 30px;
+            margin-bottom: 30px;
+            max-width: 70%; /* Ограничение ширины текста */
+        }
+        .overlay-screen button {
+            padding: 15px 30px;
+            font-size: 24px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            transition: background-color 0.3s ease;
+        }
+        .overlay-screen button:hover {
+            background-color: #0056b3;
+        }
+
+        /* Специфические стили для скрытия/отображения */
+        #gameOverScreen, #levelCompleteScreen { /* Теперь оба экрана скрыты по умолчанию */
+            display: none;
+        }
+        #gameCanvas, #scoreDisplay, #timerDisplay {
+            display: none; /* Скрыто по умолчанию, пока не начнется игра */
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <div id="scoreDisplay">Счет: 0</div>
+    <div id="timerDisplay">Время: 0с</div> <div id="startScreen" class="overlay-screen">
+        <h1>Помоги Саше убежать от злого майора.</h1>
+        <button onclick="startGame()">Начать игру</button>
+    </div>
+
+    <div id="gameOverScreen" class="overlay-screen">
+        <h1>Потрачено</h1>
+        <button onclick="restartGame()">Играть снова</button>
+    </div>
+
+    <div id="levelCompleteScreen" class="overlay-screen">
+        <h1 id="levelCompleteMessage">Спасибо, Саша ужалился!</h1>
+        <button id="nextLevelButton" onclick="startNextLevel()">Следующий уровень</button>
+    </div>
+
+    <script>
+        console.log("Script loaded and starting!");
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const timerDisplay = document.getElementById('timerDisplay'); // Новый элемент
+        const startScreen = document.getElementById('startScreen');
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        const levelCompleteScreen = document.getElementById('levelCompleteScreen'); // Новый элемент
+        const levelCompleteMessage = document.getElementById('levelCompleteMessage'); // Новый элемент
+        const nextLevelButton = document.getElementById('nextLevelButton'); // Новый элемент
+
+        // Параметры для игрока (шприца)
+        const PLAYER_COLLISION_RADIUS = 15;
+        const PLAYER_EMOJI = '💉';
+        const PLAYER_EMOJI_FONT_SIZE = 40;
+
+        // Параметры для врагов (полицейских)
+        const ENEMY_EMOJI = '👮';
+        const ENEMY_MIN_FONT_SIZE = 30;
+        const ENEMY_MAX_FONT_SIZE = 50;
+
+        // Параметры для Дома
+        const HOUSE_EMOJI = '🏠';
+        const HOUSE_FONT_SIZE = 60; // Размер иконки дома
+        const HOUSE_COLLISION_RADIUS = HOUSE_FONT_SIZE / 2;
+
+        // Настройки уровней: [время появления дома в секундах, интервал спауна врагов в мс]
+        const LEVEL_SETTINGS = [
+            { timeToHouse: 10, enemySpawnRate: 1000 }, // Уровень 1: дом через 10с, враг каждые 1000мс
+            { timeToHouse: 20, enemySpawnRate: 900 },  // Уровень 2: дом через 20с, враг каждые 900мс
+            { timeToHouse: 30, enemySpawnRate: 800 },  // Уровень 3: дом через 30с, враг каждые 800мс
+            { timeToHouse: 40, enemySpawnRate: 700 }   // Уровень 4: дом через 40с, враг каждые 700мс
+        ];
+        const MAX_LEVELS = LEVEL_SETTINGS.length;
+
+        let player;
+        let enemies = [];
+        let score = 0;
+        let gameOver = false;
+        let levelComplete = false; // Флаг прохождения уровня
+        let enemySpawnInterval;
+        let gameAnimationFrame;
+
+        let currentLevel = 1;
+        let timeElapsedInFrames = 0; // Время в кадрах для текущего уровня
+        let house = { x: 0, y: 0, active: false }; // Объект для Дома
+
+        // Класс игрока (Амелина)
+        class Player {
+            constructor() {
+                this.x = canvas.width / 2;
+                this.y = canvas.height / 2;
+                this.radius = PLAYER_COLLISION_RADIUS;
+                this.speed = 5;
+                this.dx = 0;
+                this.dy = 0;
+            }
+
+            draw() {
+                ctx.font = `${PLAYER_EMOJI_FONT_SIZE}px Arial`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(PLAYER_EMOJI, this.x, this.y);
+            }
+
+            update() {
+                this.x += this.dx;
+                this.y += this.dy;
+
+                // Прохождение сквозь стены (как в змейке)
+                if (this.x + this.radius < 0) { 
+                    this.x = canvas.width + this.radius; 
+                } else if (this.x - this.radius > canvas.width) { 
+                    this.x = -this.radius; 
+                }
+
+                if (this.y + this.radius < 0) { 
+                    this.y = canvas.height + this.radius; 
+                } else if (this.y - this.radius > canvas.height) { 
+                    this.y = -this.radius; 
+                }
+            }
+        }
+
+        // Класс вражеского "человечка" (полицейский)
+        class Enemy {
+            constructor() {
+                this.emojiSize = Math.random() * (ENEMY_MAX_FONT_SIZE - ENEMY_MIN_FONT_SIZE) + ENEMY_MIN_FONT_SIZE;
+                this.collisionSize = this.emojiSize / 2;
+                this.speed = Math.random() * 1 + 1; // Скорость от 1 до 2 (помедленнее)
+
+                // Появление врагов у краев экрана
+                const side = Math.floor(Math.random() * 4); 
+                if (side === 0) { // top
+                    this.x = Math.random() * canvas.width;
+                    this.y = -this.collisionSize;
+                } else if (side === 1) { // bottom
+                    this.x = Math.random() * canvas.width;
+                    this.y = canvas.height + this.collisionSize;
+                } else if (side === 2) { // left
+                    this.x = -this.collisionSize;
+                    this.y = Math.random() * canvas.height;
+                } else { // right
+                    this.x = canvas.width + this.collisionSize;
+                    this.y = Math.random() * canvas.height;
+                }
+            }
+
+            draw() {
+                ctx.font = `${this.emojiSize}px Arial`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(ENEMY_EMOJI, this.x, this.y);
+            }
+
+            update() {
+                // Движение к игроку
+                const angle = Math.atan2(player.y - this.y, player.x - this.x);
+                this.x += this.speed * Math.cos(angle);
+                this.y += this.speed * Math.sin(angle);
+            }
+        }
+
+        // Инициализация игры (сброс состояния для нового уровня)
+        function initGame() {
+            player = new Player();
+            enemies = [];
+            score = 0;
+            gameOver = false;
+            levelComplete = false; // Сброс флага прохождения уровня
+            timeElapsedInFrames = 0; // Сброс таймера уровня
+            house.active = false; // Дом неактивен в начале уровня
+
+            scoreDisplay.textContent = `Счет: ${score}`;
+            timerDisplay.textContent = `Время: 0с`;
+
+            // Создание первого врага
+            enemies.push(new Enemy());
+
+            // Запуск спауна врагов с учетом настроек текущего уровня
+            clearInterval(enemySpawnInterval); 
+            enemySpawnInterval = setInterval(() => {
+                if (!gameOver && !levelComplete) { // Враги спавнятся, только если игра не окончена и уровень не пройден
+                    enemies.push(new Enemy());
+                }
+            }, LEVEL_SETTINGS[currentLevel - 1].enemySpawnRate); 
+        }
+
+        // Обновление и отрисовка игры (основной игровой цикл)
+        function gameLoop() {
+            if (gameOver || levelComplete) { // Останавливаем цикл, если игра окончена или уровень пройден
+                cancelAnimationFrame(gameAnimationFrame);
+                return;
+            }
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // Очищаем холст
+
+            player.update();
+            player.draw();
+
+            enemies.forEach((enemy) => { // Removed index as it's not used
+                enemy.update();
+                enemy.draw();
+
+                // Проверка столкновений игрока с врагами
+                const dxPlayerEnemy = player.x - enemy.x;
+                const dyPlayerEnemy = player.y - enemy.y;
+                const distancePlayerEnemy = Math.sqrt(dxPlayerEnemy * dxPlayerEnemy + dyPlayerEnemy * dyPlayerEnemy);
+
+                if (distancePlayerEnemy < player.radius + enemy.collisionSize) {
+                    gameOver = true;
+                    clearInterval(enemySpawnInterval); // Останавливаем спаун врагов
+                    gameOverScreen.style.display = 'flex'; // Показываем экран "Игра окончена"
+                }
+            });
+
+            // Обновление и отображение таймера
+            timeElapsedInFrames++;
+            const secondsElapsed = Math.floor(timeElapsedInFrames / 60);
+            timerDisplay.textContent = `Время: ${secondsElapsed}с`;
+
+            // Логика появления Дома
+            if (!house.active && secondsElapsed >= LEVEL_SETTINGS[currentLevel - 1].timeToHouse) {
+                house.active = true;
+                // Случайная позиция для дома, чтобы он не появлялся у самого края
+                house.x = Math.random() * (canvas.width - HOUSE_FONT_SIZE * 2) + HOUSE_FONT_SIZE;
+                house.y = Math.random() * (canvas.height - HOUSE_FONT_SIZE * 2) + HOUSE_FONT_SIZE;
+            }
+
+            // Отрисовка Дома
+            if (house.active) {
+                ctx.font = `${HOUSE_FONT_SIZE}px Arial`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(HOUSE_EMOJI, house.x, house.y);
+
+                // Проверка столкновений игрока с Домом
+                const dxPlayerHouse = player.x - house.x;
+                const dyPlayerHouse = player.y - house.y;
+                const distancePlayerHouse = Math.sqrt(dxPlayerHouse * dxPlayerHouse + dyPlayerHouse * dyPlayerHouse);
+
+                if (distancePlayerHouse < player.radius + HOUSE_COLLISION_RADIUS) {
+                    levelComplete = true; // Уровень пройден!
+                    clearInterval(enemySpawnInterval); // Останавливаем спаун врагов
+                    levelCompleteScreen.style.display = 'flex'; // Показываем экран прохождения уровня
+
+                    // Обновляем сообщение и текст кнопки в зависимости от уровня
+                    if (currentLevel === MAX_LEVELS) {
+                        levelCompleteMessage.textContent = `Победа! Все уровни пройдены!`;
+                        nextLevelButton.textContent = "Начать заново";
+                    } else {
+                        levelCompleteMessage.textContent = `Спасибо, Саша ужалился! Уровень ${currentLevel} пройден!`;
+                        nextLevelButton.textContent = `Следующий уровень (${currentLevel + 1})`;
+                    }
+                }
+            }
+
+            score += 1;
+            scoreDisplay.textContent = `Счет: ${score}`;
+
+            gameAnimationFrame = requestAnimationFrame(gameLoop);
+        }
+
+        // Функция для запуска игры (вызывается кнопкой "Начать игру" или "Следующий уровень")
+        function startGame() {
+            startScreen.style.display = 'none';
+            gameOverScreen.style.display = 'none';
+            levelCompleteScreen.style.display = 'none'; // Скрываем экран прохождения уровня
+            canvas.style.display = 'block';
+            scoreDisplay.style.display = 'block';
+            timerDisplay.style.display = 'block'; // Показываем таймер
+            initGame(); // Инициализируем состояние игры для текущего уровня
+            gameLoop(); // Запускаем основной игровой цикл
+        }
+
+        // Функция для перезапуска игры (после "Потрачено" или после прохождения всех уровней)
+        function restartGame() {
+            currentLevel = 1; // Сброс уровня на первый
+            startGame(); // Запускаем игру с первого уровня
+        }
+
+        // Функция для перехода на следующий уровень
+        function startNextLevel() {
+            if (currentLevel < MAX_LEVELS) {
+                currentLevel++; // Увеличиваем номер уровня
+                startGame(); // Запускаем новый уровень
+            } else {
+                // Если все уровни пройдены, начинаем заново с первого
+                restartGame();
+            }
+        }
+
+        // Управление с клавиатуры
+        document.addEventListener('keydown', (e) => {
+            // Не реагируем, если игра окончена, уровень пройден или на одном из оверлейных экранов
+            if (gameOver || levelComplete || startScreen.style.display === 'flex' || gameOverScreen.style.display === 'flex' || levelCompleteScreen.style.display === 'flex') return;
+            switch (e.key) {
+                case 'ArrowUp': case 'w': case 'W': player.dy = -player.speed; break;
+                case 'ArrowDown': case 's': case 'S': player.dy = player.speed; break;
+                case 'ArrowLeft': case 'a': case 'A': player.dx = -player.speed; break;
+                case 'ArrowRight': case 'd': case 'D': player.dx = player.speed; break;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            // Не реагируем, если игра окончена, уровень пройден или на одном из оверлейных экранов
+            if (gameOver || levelComplete || startScreen.style.display === 'flex' || gameOverScreen.style.display === 'flex' || levelCompleteScreen.style.display === 'flex') return;
+            switch (e.key) {
+                case 'ArrowUp': case 'w': case 'W':
+                case 'ArrowDown': case 's': case 'S': player.dy = 0; break;
+                case 'ArrowLeft': case 'a': case 'A':
+                case 'ArrowRight': case 'd': case 'D': player.dx = 0; break;
+            }
+        });
+
+        // При загрузке страницы, убедимся, что виден только стартовый экран
+        document.addEventListener('DOMContentLoaded', () => {
+            startScreen.style.display = 'flex';
+            gameOverScreen.style.display = 'none';
+            levelCompleteScreen.style.display = 'none';
+            canvas.style.display = 'none';
+            scoreDisplay.style.display = 'none';
+            timerDisplay.style.display = 'none';
+        });
+
+    </script>
+</body>
+</html>
