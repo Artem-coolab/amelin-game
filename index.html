@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
+    <title>Помоги Саше собрать закладки!</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #222;
+            overflow: hidden;
+            position: relative;
+        }
+        canvas {
+            background-color: #000;
+            border: 2px solid #555;
+            display: block;
+        }
+        #scoreDisplay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 24px;
+            z-index: 10;
+        }
+
+        .overlay-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-family: Arial, sans-serif;
+            text-align: center;
+            z-index: 20;
+        }
+        .overlay-screen h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+        .overlay-screen p {
+            font-size: 30px;
+            margin-bottom: 30px;
+            max-width: 70%;
+        }
+        .overlay-screen button {
+            padding: 15px 30px;
+            font-size: 24px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            transition: background-color 0.3s ease;
+        }
+        .overlay-screen button:hover {
+            background-color: #0056b3;
+        }
+
+        #gameOverScreen {
+            display: none;
+        }
+        #gameCanvas, #scoreDisplay {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <div id="scoreDisplay">Закладок: 0</div>
+    
+    <div id="startScreen" class="overlay-screen">
+        <h1>Помоги Саше собрать закладки!</h1>
+        <p>Управляй шприцом, собирай таблетки, избегай собственных уколов и встречи с ментами!</p>
+        <button onclick="startGame()">Начать игру</button>
+    </div>
+
+    <div id="gameOverScreen" class="overlay-screen">
+        <h1 id="gameOverMessage">Потрачено</h1>
+        <p id="finalScore"></p>
+        <button onclick="restartGame()">Играть снова</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const startScreen = document.getElementById('startScreen');
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        const gameOverMessage = document.getElementById('gameOverMessage');
+        const finalScore = document.getElementById('finalScore');
+
+        // Параметры для игрока (шприца)
+        const PLAYER_EMOJI = '💉';
+        const PLAYER_EMOJI_FONT_SIZE = 40; // УВЕЛИЧЕН РАЗМЕР ШПРИЦА
+        const SEGMENT_SIZE = 20; // Размер сегмента
+        let playerSpeed = 80; // Скорость в миллисекундах (чем меньше, тем быстрее)
+        let lastLogicUpdateTime = 0; // Время последнего обновления логики
+
+        // Параметры для врагов (ментов)
+        const ENEMY_EMOJI = '👮';
+        const ENEMY_FONT_SIZE = 30;
+
+        // Параметры для Закладок
+        const COLLECTIBLE_EMOJI = '💊';
+        const COLLECTIBLE_FONT_SIZE = 25; // Размер таблетки (остается меньше шприца)
+
+        // Игровые переменные
+        let player = {}; // Голова шприца
+        let snakeBody = []; // Тело шприца (массив объектов {x, y, prevX, prevY})
+        let dx, dy; // Направление движения (-1, 0, 1)
+
+        let collectible = {}; // Текущая закладка
+        let enemies = []; // Массив ментов
+
+        let score = 0;
+        let gameOver = false;
+        let gameLogicInterval; // Для setInterval для логики игры
+        let animationFrameId; // Для requestAnimationFrame для отрисовки
+        let enemySpawnTimeout1;
+        let enemySpawnTimeout2;
+
+        // -- Функции для игры --
+
+        // Генерация случайных координат, чтобы объекты не накладывались
+        function getRandomCoordinates() {
+            const numCols = canvas.width / SEGMENT_SIZE;
+            const numRows = canvas.height / SEGMENT_SIZE;
+            
+            let x, y;
+            let isValidPosition = false;
+
+            while (!isValidPosition) {
+                x = Math.floor(Math.random() * numCols) * SEGMENT_SIZE;
+                y = Math.floor(Math.random() * numRows) * SEGMENT_SIZE;
+                isValidPosition = true;
+
+                // Проверяем, чтобы новая позиция не совпадала с телом змейки (включая голову)
+                // Используем координаты, которые будут после следующего логического шага, если они уже известны
+                const potentialOccupiedPositions = [{x: player.x, y: player.y}, ...snakeBody]; // Включаем голову и все сегменты
+                
+                for (let i = 0; i < potentialOccupiedPositions.length; i++) {
+                    if (potentialOccupiedPositions[i].x === x && potentialOccupiedPositions[i].y === y) {
+                        isValidPosition = false;
+                        break;
+                    }
+                }
+                
+                // Проверяем, чтобы не совпадала с ментами (с учетом их размера)
+                for (let i = 0; i < enemies.length; i++) {
+                    const enemyRect = {
+                        left: enemies[i].x,
+                        right: enemies[i].x + ENEMY_FONT_SIZE,
+                        top: enemies[i].y,
+                        bottom: enemies[i].y + ENEMY_FONT_SIZE
+                    };
+                    const newPosRect = {
+                        left: x,
+                        right: x + SEGMENT_SIZE,
+                        top: y,
+                        bottom: y + SEGMENT_SIZE
+                    };
+
+                    if (newPosRect.left < enemyRect.right && newPosRect.right > enemyRect.left &&
+                        newPosRect.top < enemyRect.bottom && newPosRect.bottom > enemyRect.top) {
+                        isValidPosition = false;
+                        break;
+                    }
+                }
+            }
+            return { x: x, y: y };
+        }
+
+        // Создание новой закладки
+        function spawnCollectible() {
+            collectible = getRandomCoordinates();
+            collectible.emoji = COLLECTIBLE_EMOJI;
+            collectible.fontSize = COLLECTIBLE_FONT_SIZE;
+            collectible.prevX = collectible.x;
+            collectible.prevY = collectible.y;
+        }
+
+        // Создание нового мента
+        class Enemy {
+            constructor() {
+                const spawnPos = getRandomCoordinates();
+                this.x = spawnPos.x;
+                this.y = spawnPos.y;
+                this.prevX = this.x;
+                this.prevY = this.y;
+                this.emoji = ENEMY_EMOJI;
+                this.fontSize = ENEMY_FONT_SIZE;
+                this.speed = Math.random() * 0.2 + 0.5;
+            }
+
+            draw(interpolationFactor) {
+                const interpolatedX = this.prevX + (this.x - this.prevX) * interpolationFactor;
+                const interpolatedY = this.prevY + (this.y - this.prevY) * interpolationFactor;
+
+                ctx.font = `${this.fontSize}px Arial`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(this.emoji, interpolatedX + SEGMENT_SIZE / 2, interpolatedY + SEGMENT_SIZE / 2);
+            }
+
+            update() {
+                this.prevX = this.x;
+                this.prevY = this.y;
+
+                const angle = Math.atan2(player.y - this.y, player.x - this.x);
+                this.x += this.speed * Math.cos(angle);
+                this.y += this.speed * Math.sin(angle);
+            }
+        }
+
+        // Инициализация или сброс игры
+        function initGame() {
+            clearInterval(gameLogicInterval);
+            cancelAnimationFrame(animationFrameId);
+            clearTimeout(enemySpawnTimeout1);
+            clearTimeout(enemySpawnTimeout2);
+
+            score = 0;
+            gameOver = false;
+            player = { 
+                x: Math.floor(canvas.width / 2 / SEGMENT_SIZE) * SEGMENT_SIZE, 
+                y: Math.floor(canvas.height / 2 / SEGMENT_SIZE) * SEGMENT_SIZE,
+                prevX: Math.floor(canvas.width / 2 / SEGMENT_SIZE) * SEGMENT_SIZE,
+                prevY: Math.floor(canvas.height / 2 / SEGMENT_SIZE) * SEGMENT_SIZE
+            };
+            snakeBody = [];
+            dx = SEGMENT_SIZE;
+            dy = 0;
+            enemies = [];
+            playerSpeed = 80;
+            lastLogicUpdateTime = performance.now();
+
+            scoreDisplay.textContent = `Закладок: ${score}`;
+            
+            spawnCollectible();
+
+            enemySpawnTimeout1 = setTimeout(() => {
+                if (!gameOver) {
+                    enemies.push(new Enemy());
+                }
+            }, 30000);
+            
+            enemySpawnTimeout2 = setTimeout(() => {
+                if (!gameOver) {
+                    enemies.push(new Enemy());
+                }
+            }, 180000);
+            
+            startGameLogicLoop();
+            gameLoop(performance.now());
+        }
+
+        // Цикл логики игры (обновление позиций, столкновения)
+        function updateGameLogic() {
+            if (gameOver) {
+                clearInterval(gameLogicInterval);
+                cancelAnimationFrame(animationFrameId);
+                clearTimeout(enemySpawnTimeout1);
+                clearTimeout(enemySpawnTimeout2);
+                gameOverScreen.style.display = 'flex';
+                finalScore.textContent = `Твой счет: ${score} закладок`;
+                return;
+            }
+
+            // Сохраняем текущие позиции как предыдущие для интерполяции
+            player.prevX = player.x;
+            player.prevY = player.y;
+            snakeBody.forEach(segment => {
+                segment.prevX = segment.x;
+                segment.prevY = segment.y;
+            });
+
+            // Обновляем тело змейки
+            // Каждый сегмент хвоста перемещается на место предыдущего
+            for (let i = snakeBody.length - 1; i > 0; i--) {
+                snakeBody[i].x = snakeBody[i - 1].x;
+                snakeBody[i].y = snakeBody[i - 1].y;
+            }
+            // Перемещаем первый сегмент хвоста на место головы
+            if (snakeBody.length > 0) {
+                snakeBody[0].x = player.x;
+                snakeBody[0].y = player.y;
+            }
+
+            // Перемещаем голову
+            player.x += dx;
+            player.y += dy;
+
+            // Прохождение сквозь стены
+            if (player.x < 0) player.x = canvas.width - SEGMENT_SIZE;
+            else if (player.x >= canvas.width) player.x = 0;
+            if (player.y < 0) player.y = canvas.height - SEGMENT_SIZE;
+            else if (player.y >= canvas.height) player.y = 0;
+
+            // Проверка столкновения с закладкой
+            if (player.x === collectible.x && player.y === collectible.y) {
+                score++;
+                scoreDisplay.textContent = `Закладок: ${score}`;
+                // Добавляем новый сегмент в хвост.
+                // Важно: он должен появиться в *старой* позиции головы (до ее перемещения).
+                // Для этого мы просто добавляем новый объект в конец snakeBody,
+                // а его координаты будут установлены в следующем updateGameLogic
+                // когда он займет позицию предыдущего сегмента.
+                // В этом подходе нет необходимости передавать prevX/prevY сразу,
+                // так как они будут обновлены при первом движении.
+                snakeBody.push({x: player.prevX, y: player.prevY, prevX: player.prevX, prevY: player.prevY}); 
+                spawnCollectible();
+                
+                playerSpeed = Math.max(40, playerSpeed - 2);
+                startGameLogicLoop();
+            }
+
+            // Обновление ментов
+            enemies.forEach(enemy => {
+                enemy.update();
+            });
+
+            // Проверка столкновений ментов (логика)
+            enemies.forEach((enemy, index) => {
+                const playerCenterX = player.x + SEGMENT_SIZE / 2;
+                const playerCenterY = player.y + SEGMENT_SIZE / 2;
+                const enemyCenterX = enemy.x + ENEMY_FONT_SIZE / 2;
+                const enemyCenterY = enemy.y + ENEMY_FONT_SIZE / 2;
+
+                const collisionThreshold = (SEGMENT_SIZE / 2) + (ENEMY_FONT_SIZE / 2) * 0.7; 
+
+                // Столкновение мента с головой шприца
+                const distPlayerEnemy = Math.sqrt(
+                    Math.pow(playerCenterX - enemyCenterX, 2) +
+                    Math.pow(playerCenterY - enemyCenterY, 2)
+                );
+                if (distPlayerEnemy < collisionThreshold) {
+                    gameOver = true;
+                    gameOverMessage.textContent = "Потрачено";
+                    return; 
+                }
+
+                // Столкновение мента с хвостом шприца
+                for (let i = 0; i < snakeBody.length; i++) {
+                    const segmentCenterX = snakeBody[i].x + SEGMENT_SIZE / 2;
+                    const segmentCenterY = snakeBody[i].y + SEGMENT_SIZE / 2;
+
+                    const distBodyEnemy = Math.sqrt(
+                        Math.pow(segmentCenterX - enemyCenterX, 2) +
+                        Math.pow(segmentCenterY - enemyCenterY, 2)
+                    );
+                    
+                    if (distBodyEnemy < collisionThreshold) {
+                        snakeBody.splice(i);
+                        score = snakeBody.length;
+                        scoreDisplay.textContent = `Закладок: ${score}`;
+                        enemies.splice(index, 1);
+                        break; 
+                    }
+                }
+            });
+            enemies = enemies.filter(enemy => 
+                enemy.x > -ENEMY_FONT_SIZE && enemy.x < canvas.width + ENEMY_FONT_SIZE &&
+                enemy.y > -ENEMY_FONT_SIZE && enemy.y < canvas.height + ENEMY_FONT_SIZE
+            );
+
+            // Проверка столкновения головы с собственным телом
+            // Итерируем с 1-го элемента, т.к. 0-й элемент snakeBody - это та клетка, где только что была голова.
+            // При столкновении с закладкой, новый сегмент добавляется в конец snakeBody.
+            // В следующем логическом шаге он переместится на место предыдущего, и т.д.
+            // Поэтому, самый первый сегмент в snakeBody (snakeBody[0]) - это тот,
+            // который только что был головой. С ним столкновения быть не должно.
+            // Начинаем проверять с сегмента под индексом 1 (то есть, со второго сегмента хвоста).
+            for (let i = 1; i < snakeBody.length; i++) { 
+                if (player.x === snakeBody[i].x && player.y === snakeBody[i].y) {
+                    gameOver = true;
+                    gameOverMessage.textContent = "Ужалился!";
+                    break;
+                }
+            }
+            lastLogicUpdateTime = performance.now();
+        }
+
+        // Цикл отрисовки (requestAnimationFrame)
+        function gameLoop(currentTime) {
+            if (gameOver) {
+                return;
+            }
+
+            animationFrameId = requestAnimationFrame(gameLoop);
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Фактор интерполяции не должен превышать 1, чтобы избежать "перескока"
+            let interpolationFactor = (currentTime - lastLogicUpdateTime) / playerSpeed;
+            if (interpolationFactor > 1) interpolationFactor = 1;
+
+            // Отрисовка закладки
+            ctx.font = `${collectible.fontSize}px Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(collectible.emoji, collectible.x + SEGMENT_SIZE / 2, collectible.y + SEGMENT_SIZE / 2);
+
+            // Отрисовка головы шприца с интерполяцией
+            const interpolatedPlayerX = player.prevX + (player.x - player.prevX) * interpolationFactor;
+            const interpolatedPlayerY = player.prevY + (player.y - player.prevY) * interpolationFactor;
+            ctx.font = `${PLAYER_EMOJI_FONT_SIZE}px Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(PLAYER_EMOJI, interpolatedPlayerX + SEGMENT_SIZE / 2, interpolatedPlayerY + SEGMENT_SIZE / 2);
+
+            // Отрисовка тела шприца с интерполяцией
+            for (let i = 0; i < snakeBody.length; i++) {
+                const segment = snakeBody[i];
+                // Убедимся, что prevX/prevY существуют (для нового сегмента они могут быть такими же, как x/y)
+                const segPrevX = segment.prevX !== undefined ? segment.prevX : segment.x;
+                const segPrevY = segment.prevY !== undefined ? segment.prevY : segment.y;
+
+                const interpolatedSegmentX = segPrevX + (segment.x - segPrevX) * interpolationFactor;
+                const interpolatedSegmentY = segPrevY + (segment.y - segPrevY) * interpolationFactor;
+                ctx.fillText(COLLECTIBLE_EMOJI, interpolatedSegmentX + SEGMENT_SIZE / 2, interpolatedSegmentY + SEGMENT_SIZE / 2);
+            }
+
+            // Отрисовка ментов с интерполяцией
+            enemies.forEach(enemy => {
+                enemy.draw(interpolationFactor);
+            });
+        }
+
+        // Запуск интервала логики игры
+        function startGameLogicLoop() {
+            clearInterval(gameLogicInterval);
+            gameLogicInterval = setInterval(updateGameLogic, playerSpeed);
+        }
+
+        // -- Управление --
+
+        document.addEventListener('keydown', (e) => {
+            if (gameOver) return;
+
+            switch (e.key) {
+                case 'ArrowUp': case 'w': case 'W':
+                    if (dy === 0) { dx = 0; dy = -SEGMENT_SIZE; } break;
+                case 'ArrowDown': case 's': case 'S':
+                    if (dy === 0) { dx = 0; dy = SEGMENT_SIZE; } break;
+                case 'ArrowLeft': case 'a': case 'A':
+                    if (dx === 0) { dx = -SEGMENT_SIZE; dy = 0; } break;
+                case 'ArrowRight': case 'd': case 'D':
+                    if (dx === 0) { dx = SEGMENT_SIZE; dy = 0; } break;
+            }
+        });
+
+        // -- Управление экранами --
+
+        function startGame() {
+            startScreen.style.display = 'none';
+            gameOverScreen.style.display = 'none';
+            canvas.style.display = 'block';
+            scoreDisplay.style.display = 'block';
+            initGame();
+        }
+
+        function restartGame() {
+            startGame();
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            startScreen.style.display = 'flex';
+            gameOverScreen.style.display = 'none';
+            canvas.style.display = 'none';
+            scoreDisplay.style.display = 'none';
+        });
+    </script>
+</body>
+</html>
